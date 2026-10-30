@@ -2,7 +2,7 @@
 
 开源地址：https://github.com/kaizenai100/scenic-cs-agent
 
-个人练习仓：对照同程 `ai.agent.intelligentcustomer` **只读架构**，用课件知识点从零演进重写一版「景区智能客服」骨架。
+个人练习仓：对照同程 `ai.agent.intelligentcustomer` **只读架构**，从零演进重写一版「景区智能客服」骨架。
 
 ## 边界
 
