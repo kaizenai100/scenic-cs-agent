@@ -12,14 +12,14 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
-from jinja2 import Environment, StrictUndefined, select_autoescape
+from jinja2 import Environment, StrictUndefined
 
 PROMPTS_DIR = Path(__file__).resolve().parent
 
 # autoescape 默认关：这是给模型的文本，不是 HTML 页面
 _env = Environment(
     undefined=StrictUndefined,
-    autoescape=select_autoescape(default=False),
+    autoescape=False,
     trim_blocks=True,
     lstrip_blocks=True,
 )
