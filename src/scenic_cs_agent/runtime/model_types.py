@@ -77,3 +77,20 @@ class ModelAdapter(ABC):
     @abstractmethod
     def generate(self, request: ModelRequest) -> ModelResult:
         raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ModelStreamEvent:
+    """流式统一事件（对照课件 1-3）。
+
+    上层只认 type + data，不直接吃 DeepSeek/OpenAI 的 chunk 结构。
+    本步先用三种：
+      text.delta     — 一段增量正文
+      model.finished — 模型说结束了（finish_reason）
+      model.usage    — token 用量（常在流末尾一块）
+    以后还会加 tool.started / run.cancelled 等。
+    """
+
+    type: str
+    data: dict[str, Any]
+

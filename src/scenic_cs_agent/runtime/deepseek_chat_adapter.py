@@ -7,12 +7,15 @@
   - system → messages[0].role == "system"
   - user   → messages[1].role == "user"
 
+步骤 3：generate() 仍是一次性整段；
+stream() 打开 stream=True，把厂商 chunk 收成 ModelStreamEvent。
 """
 
 from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 from typing import Any
 
 from openai import OpenAI
@@ -22,6 +25,7 @@ from scenic_cs_agent.runtime.model_types import (
     ModelCapabilities,
     ModelRequest,
     ModelResult,
+    ModelStreamEvent,
 )
 
 
@@ -102,3 +106,50 @@ class DeepSeekChatAdapter(ModelAdapter):
             output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
             request_id=raw.id,
         )
+
+    def stream(self, request: ModelRequest) -> Iterator[ModelStreamEvent]:
+        """流式：边收边 yield 统一事件。
+
+        注意：
+        - stream=True 不会让模型推理更快，价值是「可观察 / 可取消 / 先出字」
+        - 这里只做 Adapter 层归一；还没上 FastAPI SSE（步骤稍后）
+        - include_usage=True：最后一块常带 usage（具体以厂商为准）
+        """
+        messages, kwargs = self._messages_and_kwargs(request)
+
+        raw = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            max_tokens=request.max_output_tokens,
+            stream=True,
+            stream_options={"include_usage": True},
+            **kwargs,
+        )
+
+        for chunk in raw:
+            choice = chunk.choices[0] if chunk.choices else None
+
+            # 增量正文：打字机效果的数据面
+            if choice and choice.delta and choice.delta.content:
+                yield ModelStreamEvent(
+                    type="text.delta",
+                    data={"delta": choice.delta.content},
+                )
+
+            # 模型侧结束原因（stop / length / ...）
+            if choice and choice.finish_reason:
+                yield ModelStreamEvent(
+                    type="model.finished",
+                    data={"finish_reason": choice.finish_reason},
+                )
+
+            # 用量常在流末尾单独一块；没有 choices 也正常
+            if chunk.usage is not None:
+                yield ModelStreamEvent(
+                    type="model.usage",
+                    data={
+                        "input_tokens": chunk.usage.prompt_tokens,
+                        "output_tokens": chunk.usage.completion_tokens,
+                        "total_tokens": chunk.usage.total_tokens,
+                    },
+                )
