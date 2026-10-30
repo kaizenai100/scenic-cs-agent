@@ -1,4 +1,4 @@
-"""Model Adapter 契约（对照课件 1-2）。
+"""Model Adapter 契约。
 
 业务层（main / 以后的 Loop）只认这几个类型：
   ModelRequest  → 想让模型干什么
@@ -81,7 +81,7 @@ class ModelAdapter(ABC):
 
 @dataclass(frozen=True)
 class ModelStreamEvent:
-    """流式统一事件（对照课件 1-3）。
+    """流式统一事件。
 
     上层只认 type + data，不直接吃 DeepSeek/OpenAI 的 chunk 结构。
     本步先用三种：
