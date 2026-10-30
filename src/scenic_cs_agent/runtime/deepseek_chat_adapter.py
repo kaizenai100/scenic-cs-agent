@@ -95,10 +95,16 @@ class DeepSeekChatAdapter(ModelAdapter):
         choice = raw.choices[0]
         text = choice.message.content or ""
         usage = raw.usage
-        data = json.loads(text) if request.output_schema else None
+        data = None
+        if request.output_schema:
+            # 解析失败不在这里抛：交给上层结构化执行器决定修复/兜底
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                data = None
 
         return ModelResult(
-            kind="structured" if data is not None else "text",
+            kind="structured" if request.output_schema else "text",
             text=text,
             data=data,
             finish_reason=choice.finish_reason,

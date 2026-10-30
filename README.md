@@ -22,12 +22,13 @@ examples/
   step02_adapter/main.py
   step03_stream/main.py
   step04_prompt/main.py
+  step05_structured/main.py
 src/scenic_cs_agent/   # 可复用库（Adapter 等）
 ```
 
 当前步骤：
 
 ```bash
-uv run python examples/step04_prompt/main.py
+uv run python examples/step05_structured/main.py
 ```
 

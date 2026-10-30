@@ -1,5 +1,6 @@
 # 根入口只做导航：每一步有独立 examples/stepXX_*/main.py
-# 当前请跑步骤 4：
+# 当前请跑步骤 5：
+#   uv run python examples/step05_structured/main.py
 #   uv run python examples/step04_prompt/main.py
 #
 # 回顾：
@@ -10,6 +11,6 @@
 
 print(
     "请按步骤跑独立入口，例如：\n"
-    "  uv run python examples/step04_prompt/main.py\n"
+    "  uv run python examples/step05_structured/main.py\n"
     "目录见 examples/"
 )
