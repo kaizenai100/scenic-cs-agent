@@ -5,7 +5,7 @@ description = "教学用：对照同程景区客服 Agent 架构的个人重写�
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "jinja2>=3.1.6",
+    "langfuse>=5.1.0",
     "openai>=3.41.0",
     "pydantic>=2.14.2",
     "python-dotenv>=1.2.4",

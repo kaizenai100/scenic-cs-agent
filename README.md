@@ -23,6 +23,7 @@ examples/
   step03_stream/main.py
   step04_prompt/main.py
   step05_structured/main.py
+  step05b_langfuse_prompt/main.py
 src/scenic_cs_agent/   # 可复用库（Adapter 等）
 ```
 

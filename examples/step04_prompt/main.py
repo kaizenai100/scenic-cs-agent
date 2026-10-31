@@ -1,4 +1,4 @@
-# 步骤 4 · Prompt 模板化（Jinja2 + StrictUndefined）
+# 步骤 4 · Prompt 模板化（5.5 起模板改为 {{var}} 单一规则，主源头 Langfuse）
 # 跑：uv run python examples/step04_prompt/main.py
 #
 # 读代码盯：
@@ -19,8 +19,8 @@ USER = "明天想去苏州玩，有什么园子推荐？门票多少钱？"
 
 
 def main() -> None:
-    prompt = render_scenic_presale(tools_enabled=False)
-    print(f"[prompt] version={prompt.version} template={prompt.template_name}")
+    prompt = render_scenic_presale()
+    print(f"[prompt] source={prompt.source} version={prompt.version}")
     print(f"[prompt] fingerprint={prompt.fingerprint[:12]}...")
     print("--- system preview ---")
     print(prompt.text)
