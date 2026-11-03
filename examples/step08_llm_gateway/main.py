@@ -122,8 +122,11 @@ def _gateway(
     base_delay: float = 0.0,
     max_delay: float = 0.0,
     clock: DemoClock | None = None,
+    strategy: str = "priority",
+    weights: dict[str, int] | None = None,
 ) -> tuple[LLMGateway, DemoClock]:
     clock = clock or DemoClock()
+    weight_of = weights or {}
     bindings = {
         name: ProviderBinding(name=name, adapter=adapter, model=f"{name}-model")
         for name, adapter in adapters.items()
@@ -132,9 +135,14 @@ def _gateway(
         bindings=bindings,
         aliases={
             "default": AliasSpec(
-                strategy="priority",
+                strategy=strategy,
                 routes=tuple(
-                    RouteSpec(provider=name, model=f"{name}-model") for name in adapters
+                    RouteSpec(
+                        provider=name,
+                        model=f"{name}-model",
+                        weight=weight_of.get(name, 1),
+                    )
+                    for name in adapters
                 ),
             )
         },
@@ -171,6 +179,7 @@ def _show_record(gateway: LLMGateway) -> None:
                 "input_tokens": record.input_tokens,
                 "output_tokens": record.output_tokens,
                 "latency_ms": round(record.latency_ms, 1),
+                "ttft_ms": None if record.ttft_ms is None else round(record.ttft_ms, 1),
             },
             ensure_ascii=False,
         ),
@@ -367,8 +376,45 @@ def demo_factory() -> None:
         f"test_rpm={cfg.gateway.rate_limit.requests_per_minute}",
         f"test_threshold={cfg.gateway.circuit_breaker.failure_threshold}",
         f"routes={[route.provider for route in cfg.gateway.aliases['default'].routes]}",
+        f"fast={cfg.gateway.aliases['fast'].strategy}",
+        f"langfuse_enabled={cfg.gateway.observe.langfuse_enabled}",
+        "（没配 Langfuse 密钥时不会上报）",
     )
     _show_record(gateway)
+
+
+def demo_weighted_and_ttft() -> None:
+    """权重决定先打谁；流式记录里能看到 ttft，非流式是 null。"""
+    _banner("9b) 加权轮询 + TTFT")
+    heavy = FakeAdapter(text="heavy")
+    light = FakeAdapter(text="light")
+    gateway, _clock = _gateway(
+        {"heavy": heavy, "light": light},
+        strategy="weighted_round_robin",
+        weights={"heavy": 2, "light": 1},
+        max_attempts=1,
+        burst=6,
+    )
+    picked = []
+    for _ in range(6):
+        gateway.complete(_request())
+        picked.append(gateway.records[-1].provider)
+    print("wrr order:", " ".join(picked or []))
+    print(f"non-stream ttft={gateway.records[-1].ttft_ms}")
+
+    class Once(FakeAdapter):
+        def stream(self, request: ModelRequest, *, cancel_event: threading.Event | None = None):
+            del request, cancel_event
+            self.calls += 1
+            yield ModelStreamEvent(type="text.delta", data={"delta": "开"})
+
+    stream_gateway, _clock = _gateway({"primary": Once()}, max_attempts=1)
+    text = "".join(
+        event.data["delta"]
+        for event in stream_gateway.stream(_request())
+        if event.type == "text.delta"
+    )
+    print(f"stream text={text} ttft_ms={stream_gateway.records[-1].ttft_ms}")
 
 
 def demo_live() -> None:
@@ -406,4 +452,5 @@ if __name__ == "__main__":
     demo_no_resume_after_text()
     demo_loop_through_gateway()
     demo_factory()
+    demo_weighted_and_ttft()
     demo_live()

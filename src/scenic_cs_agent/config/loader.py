@@ -136,11 +136,15 @@ class ProviderConfig(BaseModel):
 
 
 class RouteConfig(BaseModel):
-    """别名下的一条路由。model 省略时用 provider.model；写了就必须一致，避免静默打错模型。"""
+    """别名下的一条路由。model 省略时用 provider.model；写了就必须一致，避免静默打错模型。
+
+    weight 只被 weighted_round_robin 使用。priority 忽略它，但允许写在配置里，换策略时不用删字段。
+    """
 
     model_config = ConfigDict(extra="forbid")
     provider: str = Field(min_length=1)
     model: str | None = None
+    weight: int = Field(default=1, ge=1, le=10_000)
 
     @field_validator("model")
     @classmethod
@@ -151,11 +155,25 @@ class RouteConfig(BaseModel):
 
 
 class AliasConfig(BaseModel):
-    """priority = 按 routes 顺序尝试，前面的失败或熔断打开才用下一条。"""
+    """priority：按顺序试，前面的失败或熔断打开才用下一条。这是默认策略。
+
+    weighted_round_robin：按 weight 决定这一次先打谁，失败后仍按其余路由 fallback。
+    """
 
     model_config = ConfigDict(extra="forbid")
-    strategy: Literal["priority"]
+    strategy: Literal["priority", "weighted_round_robin"] = "priority"
     routes: list[RouteConfig] = Field(min_length=1)
+
+
+class ObserveConfig(BaseModel):
+    """网关观测开关。连接信息不用在这里再写一份，用上面的 langfuse 段。
+
+    langfuse_enabled=true 且 public_key、secret_key 都有时，才把调用记成 generation。
+    缺密钥或设成 false：不建客户端，调用照常进行。这里不拉 prompt。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    langfuse_enabled: bool = True
 
 
 class GatewayConfig(BaseModel):
@@ -167,6 +185,7 @@ class GatewayConfig(BaseModel):
     retry: RetryConfig
     circuit_breaker: CircuitBreakerConfig
     rate_limit: RateLimitConfig
+    observe: ObserveConfig = Field(default_factory=ObserveConfig)
     providers: dict[str, ProviderConfig]
     aliases: dict[str, AliasConfig]
 

@@ -1,7 +1,8 @@
 """步骤 8 · 进程内 LLM Gateway。
 
 全部用 Fake Adapter，不读 API Key，也不访问网络。
-覆盖：直通成功、失败后重试成功、熔断打开拒绝、限流、fallback、流式取消。
+覆盖：直通成功、失败后重试成功、熔断打开拒绝、限流、fallback、流式取消、
+加权轮询、流式 TTFT、Langfuse 观测开关（假客户端，不连真的 Langfuse）。
 另外锁住几件骨架里容易写错的行为：半开探测、正文已输出不能换路由、配置深合并、结构化修复。
 """
 
@@ -18,6 +19,7 @@ from scenic_cs_agent.gateway import (
     AliasSpec,
     AllRoutesFailed,
     CircuitOpenError,
+    GatewayError,
     LLMGateway,
     PartialStreamError,
     ProviderBinding,
@@ -127,6 +129,8 @@ def _build(
     structured_retries: int = 1,
     clock: Clock | None = None,
     on_record: object | None = None,
+    strategy: str = "priority",
+    weights: dict[str, int] | None = None,
 ) -> tuple[LLMGateway, FakeClock]:
     """用假适配器组一个网关。aliases 缺省时，default 按 adapters 的插入顺序做 priority。"""
     fake_clock = clock if isinstance(clock, FakeClock) else FakeClock()
@@ -138,10 +142,18 @@ def _build(
         for name, adapter in adapters.items()
     }
     alias_map = aliases or {"default": list(adapters)}
+    weight_of = weights or {}
     specs = {
         alias: AliasSpec(
-            strategy="priority",
-            routes=tuple(RouteSpec(provider=provider, model=f"{provider}-model") for provider in providers),
+            strategy=strategy,
+            routes=tuple(
+                RouteSpec(
+                    provider=provider,
+                    model=f"{provider}-model",
+                    weight=weight_of.get(provider, 1),
+                )
+                for provider in providers
+            ),
         )
         for alias, providers in alias_map.items()
     }
@@ -196,6 +208,7 @@ def test_complete_success_records_route_and_tokens():
     assert record.input_tokens == 11
     assert record.output_tokens == 7
     assert record.stream is False
+    assert record.ttft_ms is None
     assert seen == [record]
 
 
@@ -414,6 +427,7 @@ def test_stream_cancel_stops_upstream():
     assert record.stream is True
     assert record.provider == "primary"
     assert record.attempts == 1
+    assert record.ttft_ms == 0.0
 
 
 def test_stream_does_not_fallback_after_text_is_delivered():
@@ -631,6 +645,8 @@ def test_config_deep_merge_keeps_gateway_defaults():
     assert test_cfg.gateway.circuit_breaker.failure_threshold == 3
     assert test_cfg.gateway.circuit_breaker.cooldown_seconds == 30
     assert test_cfg.gateway.retry.max_attempts_per_route == 2
+    assert test_cfg.gateway.observe.langfuse_enabled is True
+    assert prod_cfg.gateway.observe.langfuse_enabled is True
     assert prod_cfg.gateway.rate_limit.requests_per_minute == 60
     assert prod_cfg.gateway.circuit_breaker.failure_threshold == 5
     assert prod_cfg.gateway.circuit_breaker.cooldown_seconds == 45
@@ -638,6 +654,13 @@ def test_config_deep_merge_keeps_gateway_defaults():
     assert [route.provider for route in test_cfg.gateway.aliases["default"].routes] == [
         "deepseek",
         "deepseek_backup",
+    ]
+    assert test_cfg.gateway.aliases["default"].strategy == "priority"
+    fast = test_cfg.gateway.aliases["fast"]
+    assert fast.strategy == "weighted_round_robin"
+    assert [(route.provider, route.weight) for route in fast.routes] == [
+        ("deepseek", 3),
+        ("deepseek_backup", 1),
     ]
 
 
@@ -649,9 +672,14 @@ def test_config_fail_fast_on_bad_route_and_strategy():
         GatewayConfig.model_validate(broken_provider)
 
     broken_strategy = json.loads(json.dumps(raw))
-    broken_strategy["aliases"]["default"]["strategy"] = "weighted_round_robin"
+    broken_strategy["aliases"]["default"]["strategy"] = "shuffle"
     with pytest.raises(ValidationError):
         GatewayConfig.model_validate(broken_strategy)
+
+    broken_weight = json.loads(json.dumps(raw))
+    broken_weight["aliases"]["fast"]["routes"][0]["weight"] = 0
+    with pytest.raises(ValidationError):
+        GatewayConfig.model_validate(broken_weight)
 
     broken_delay = json.loads(json.dumps(raw))
     broken_delay["retry"]["base_delay_seconds"] = 5
@@ -696,3 +724,242 @@ def test_factory_without_api_key_does_not_call_vendor(monkeypatch: pytest.Monkey
     assert record.attempts == 2
     assert record.retries == 0
     assert record.fallback is True
+
+
+def test_weighted_round_robin_smooth_distribution():
+    """weight 2:1 时，6 次调用的首选顺序是平滑的，不是先把大权重连续打完。"""
+    heavy = FakeAdapter(text="heavy")
+    light = FakeAdapter(text="light")
+    gateway, _clock = _build(
+        {"heavy": heavy, "light": light},
+        strategy="weighted_round_robin",
+        weights={"heavy": 2, "light": 1},
+        max_attempts=1,
+        burst=6,
+    )
+
+    picked = []
+    for _ in range(6):
+        gateway.complete(_request())
+        picked.append(gateway.records[-1].provider)
+
+    assert picked == ["heavy", "light", "heavy", "heavy", "light", "heavy"]
+    assert picked.count("heavy") == 4
+    assert picked.count("light") == 2
+    assert all(record.ttft_ms is None for record in gateway.records)
+
+
+def test_priority_ignores_weight():
+    """priority 永远先走配置里的第一条，哪怕第二条的 weight 更大。"""
+    first = FakeAdapter(text="first")
+    second = FakeAdapter(text="second")
+    gateway, _clock = _build(
+        {"first": first, "second": second},
+        strategy="priority",
+        weights={"first": 1, "second": 100},
+        max_attempts=1,
+        burst=3,
+    )
+    for _ in range(3):
+        assert gateway.complete(_request()).text == "first"
+    assert second.calls == 0
+
+
+def test_weighted_round_robin_falls_back_when_chosen_route_fails():
+    """这一次先选中备路由；它失败后仍会改打另一条，并记 fallback。"""
+    primary = FakeAdapter(text="主路由兜底")
+    backup = FakeAdapter([UpstreamError("备路由挂了", code="500", retryable=False)])
+    gateway, _clock = _build(
+        {"primary": primary, "backup": backup},
+        strategy="weighted_round_robin",
+        weights={"primary": 1, "backup": 2},
+        max_attempts=1,
+    )
+
+    result = gateway.complete(_request())
+
+    assert result.text == "主路由兜底"
+    assert backup.calls == 1
+    assert primary.calls == 1
+    record = gateway.records[-1]
+    assert record.fallback is True
+    assert record.provider == "primary"
+
+
+def test_unknown_strategy_fails_fast():
+    with pytest.raises(GatewayError, match="weighted_round_robin"):
+        _build({"primary": FakeAdapter()}, strategy="shuffle")
+
+
+def test_stream_ttft_is_none_until_first_event_and_includes_retry_wait():
+    """非流式没有 TTFT。流式在第一条事件之前的退避要算进 ttft。"""
+
+    class Immediate(FakeAdapter):
+        def stream(self, request: ModelRequest, *, cancel_event: threading.Event | None = None):
+            del request, cancel_event
+            self.calls += 1
+            yield ModelStreamEvent(type="text.delta", data={"delta": "你"})
+
+    immediate = Immediate()
+    gateway, _clock = _build({"primary": immediate}, max_attempts=1)
+    assert gateway.complete(_request()).text
+    assert gateway.records[-1].ttft_ms is None
+
+    events = list(gateway.stream(_request()))
+    assert events[0].data["delta"] == "你"
+    assert gateway.records[-1].stream is True
+    assert gateway.records[-1].ttft_ms == 0.0
+
+    class Flaky(FakeAdapter):
+        def stream(self, request: ModelRequest, *, cancel_event: threading.Event | None = None):
+            del request, cancel_event
+            self.calls += 1
+            if self.calls == 1:
+                raise UpstreamError("超时", code="timeout", retryable=True)
+            yield ModelStreamEvent(type="text.delta", data={"delta": "好"})
+
+    flaky = Flaky()
+    retry_gateway, clock = _build(
+        {"primary": flaky},
+        max_attempts=2,
+        base_delay=0.2,
+        max_delay=1.0,
+    )
+    assert list(retry_gateway.stream(_request()))[0].data["delta"] == "好"
+    assert clock.slept == [0.2]
+    assert retry_gateway.records[-1].ttft_ms == pytest.approx(200.0)
+    assert flaky.calls == 2
+
+    class Boom(FakeAdapter):
+        def stream(self, request: ModelRequest, *, cancel_event: threading.Event | None = None):
+            del request, cancel_event
+            self.calls += 1
+            raise UpstreamError("没连上", code="503", retryable=False)
+            yield ModelStreamEvent(type="text.delta", data={"delta": "不会执行"})
+
+    dead = Boom()
+    dead_gateway, _clock = _build({"primary": dead}, max_attempts=1)
+    with pytest.raises(AllRoutesFailed):
+        list(dead_gateway.stream(_request()))
+    assert dead_gateway.records[-1].stream is True
+    assert dead_gateway.records[-1].ttft_ms is None
+
+
+class _FakeLangfuse:
+    """不连网。start_observation 把参数留下来，end 记一次。"""
+
+    def __init__(self) -> None:
+        self.started: list[dict] = []
+        self.ended = 0
+        self.fail = False
+
+    def start_observation(self, **kwargs):
+        if self.fail:
+            raise RuntimeError("langfuse down")
+        self.started.append(kwargs)
+        return self
+
+    def end(self):
+        self.ended += 1
+        return self
+
+
+def test_langfuse_sink_is_noop_without_keys(monkeypatch: pytest.MonkeyPatch):
+    """没配密钥时不能去 new Langfuse，即使开关是开的。"""
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("缺密钥时不应创建 Langfuse 客户端")
+
+    monkeypatch.setattr("langfuse.Langfuse", boom)
+    cfg = load_config("test")
+    cfg = cfg.model_copy(
+        update={
+            "langfuse": cfg.langfuse.model_copy(update={"public_key": None, "secret_key": None})
+        }
+    )
+    gateway = build_gateway_from_config(
+        cfg,
+        adapters={
+            "deepseek": FakeAdapter(text="不上报"),
+            "deepseek_backup": FakeAdapter(text="备"),
+        },
+    )
+    assert gateway.complete(ModelRequest(system="s", user="hi")).text == "不上报"
+
+
+def test_langfuse_sink_records_call_and_can_be_disabled():
+    cfg = load_config("test")
+    client = _FakeLangfuse()
+    seen: list[object] = []
+    gateway = build_gateway_from_config(
+        cfg,
+        adapters={
+            "deepseek": FakeAdapter(text="已记录"),
+            "deepseek_backup": FakeAdapter(text="备"),
+        },
+        langfuse_client=client,
+        on_record=seen.append,
+    )
+    assert gateway.complete(ModelRequest(system="s", user="hi")).text == "已记录"
+    assert len(client.started) == 1
+    assert client.ended == 1
+    meta = client.started[0]["metadata"]
+    assert client.started[0]["name"] == "gateway.complete"
+    assert client.started[0]["as_type"] == "generation"
+    assert client.started[0]["model"] == "deepseek-chat"
+    assert meta["alias"] == "default"
+    assert meta["provider"] == "deepseek"
+    assert meta["fallback"] is False
+    assert meta["retries"] == 0
+    assert meta["ttft_ms"] is None
+    assert meta["error_code"] is None
+    assert "上次输出" not in str(client.started[0])
+    assert client.started[0]["usage_details"]["input"] == 1
+    assert seen and seen[0].provider == "deepseek"  # type: ignore[attr-defined]
+
+    client.fail = True
+    assert gateway.complete(ModelRequest(system="s", user="再来")).text == "已记录"
+
+    disabled = cfg.model_copy(
+        update={
+            "gateway": cfg.gateway.model_copy(
+                update={
+                    "observe": cfg.gateway.observe.model_copy(update={"langfuse_enabled": False})
+                }
+            )
+        }
+    )
+    quiet = _FakeLangfuse()
+    off = build_gateway_from_config(
+        disabled,
+        adapters={
+            "deepseek": FakeAdapter(text="关掉了"),
+            "deepseek_backup": FakeAdapter(text="备"),
+        },
+        langfuse_client=quiet,
+    )
+    assert off.complete(ModelRequest(system="s", user="hi")).text == "关掉了"
+    assert quiet.started == []
+    assert quiet.ended == 0
+
+
+def test_langfuse_stream_generation_includes_ttft():
+    cfg = load_config("test")
+
+    class Once(FakeAdapter):
+        def stream(self, request: ModelRequest, *, cancel_event: threading.Event | None = None):
+            del request, cancel_event
+            yield ModelStreamEvent(type="text.delta", data={"delta": "流"})
+
+    client = _FakeLangfuse()
+    gateway = build_gateway_from_config(
+        cfg,
+        adapters={"deepseek": Once(), "deepseek_backup": FakeAdapter()},
+        langfuse_client=client,
+        clock=FakeClock(),
+    )
+    assert list(gateway.stream(ModelRequest(system="s", user="hi")))[0].data["delta"] == "流"
+    assert client.started[0]["name"] == "gateway.stream"
+    assert client.started[0]["metadata"]["ttft_ms"] == 0.0
+    assert client.ended == 1
+

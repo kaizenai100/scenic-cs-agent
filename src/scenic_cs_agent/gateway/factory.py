@@ -10,16 +10,20 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 
 from scenic_cs_agent.config.loader import AppConfig, ConfigError, get_config
 from scenic_cs_agent.gateway.clock import Clock
 from scenic_cs_agent.gateway.gateway import LLMGateway
+from scenic_cs_agent.gateway.langfuse_sink import LangfuseObservationClient, langfuse_sink_from_config
 from scenic_cs_agent.gateway.observe import CallRecord
 from scenic_cs_agent.gateway.retry import RetryPolicy
 from scenic_cs_agent.gateway.routing import AliasSpec, ProviderBinding, RouteSpec
 from scenic_cs_agent.gateway.unconfigured import UnconfiguredAdapter
 from scenic_cs_agent.runtime.model_types import ModelAdapter
+
+logger = logging.getLogger("scenic_cs_agent.gateway")
 
 
 def build_gateway_from_config(
@@ -28,8 +32,13 @@ def build_gateway_from_config(
     adapters: Mapping[str, ModelAdapter] | None = None,
     clock: Clock | None = None,
     on_record: Callable[[CallRecord], None] | None = None,
+    langfuse_client: LangfuseObservationClient | None = None,
 ) -> LLMGateway:
-    """按配置注册 provider 和别名。config 为空时用进程内的 get_config()。"""
+    """按配置注册 provider 和别名。config 为空时用进程内的 get_config()。
+
+    langfuse_client 只给测试注入假客户端。生产不传，有密钥且 observe.langfuse_enabled
+    时才用配置里的 host / key / environment 自己建。缺密钥或关掉开关则不上报。
+    """
     app = config if config is not None else get_config()
     gateway_cfg = app.gateway
     injected = dict(adapters or {})
@@ -57,12 +66,23 @@ def build_gateway_from_config(
         for route in spec.routes:
             provider = gateway_cfg.providers[route.provider]
             model = route.model or provider.model
-            routes.append(RouteSpec(provider=route.provider, model=model))
+            routes.append(
+                RouteSpec(provider=route.provider, model=model, weight=route.weight)
+            )
         aliases[alias] = AliasSpec(strategy=spec.strategy, routes=tuple(routes))
 
     retry_cfg = gateway_cfg.retry
     circuit_cfg = gateway_cfg.circuit_breaker
     limit_cfg = gateway_cfg.rate_limit
+    langfuse_cfg = app.langfuse
+    langfuse_sink = langfuse_sink_from_config(
+        enabled=gateway_cfg.observe.langfuse_enabled,
+        host=langfuse_cfg.host,
+        public_key=langfuse_cfg.public_key,
+        secret_key=langfuse_cfg.secret_key,
+        environment=langfuse_cfg.environment,
+        client=langfuse_client,
+    )
     return LLMGateway(
         bindings=bindings,
         aliases=aliases,
@@ -81,7 +101,7 @@ def build_gateway_from_config(
         requests_per_minute=limit_cfg.requests_per_minute,
         burst=limit_cfg.burst,
         structured_output_retries=gateway_cfg.structured_output_retries,
-        on_record=on_record,
+        on_record=_combine_hooks(on_record, langfuse_sink),
     )
 
 
@@ -117,3 +137,23 @@ def _create_vendor_adapter(provider: object) -> ModelAdapter:
             timeout=provider.timeout_seconds,
         )
     raise ConfigError(f"不支持的适配器 kind={provider.kind!r}")
+
+
+def _combine_hooks(
+    *hooks: Callable[[CallRecord], None] | None,
+) -> Callable[[CallRecord], None] | None:
+    """把业务自己的回调和 Langfuse 串起来。一个失败不影响另一个，也不影响模型结果。"""
+    active = [hook for hook in hooks if hook is not None]
+    if not active:
+        return None
+    if len(active) == 1:
+        return active[0]
+
+    def emit(record: CallRecord) -> None:
+        for hook in active:
+            try:
+                hook(record)
+            except Exception:
+                logger.exception("gateway 观测回调失败，不影响本次调用结果")
+
+    return emit
