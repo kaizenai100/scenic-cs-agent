@@ -39,13 +39,20 @@ class OpenAIResponsesAdapter(ModelAdapter):
         self,
         api_key: str | None = None,
         model: str = "gpt-4.1-mini",
+        timeout: float = 30.0,
+        base_url: str | None = None,
     ) -> None:
         self.model = model
-        self.client = OpenAI(
-            api_key=api_key or os.environ["OPENAI_API_KEY"],
-            timeout=30.0,
-            max_retries=0,
-        )
+        self.timeout = timeout
+        # base_url 为空就用 SDK 默认的 OpenAI 地址。Gateway 只有配置里写了才传。
+        client_kwargs: dict[str, Any] = {
+            "api_key": api_key or os.environ["OPENAI_API_KEY"],
+            "timeout": timeout,
+            "max_retries": 0,  # 重试交给 Gateway
+        }
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self.client = OpenAI(**client_kwargs)
 
     def generate(self, request: ModelRequest) -> ModelResult:
         kwargs: dict[str, Any] = {}

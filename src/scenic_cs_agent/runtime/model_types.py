@@ -78,6 +78,11 @@ class ModelAdapter(ABC):
     子类必须：
       1) 声明 name、capabilities
       2) 实现 generate：ModelRequest → ModelResult
+
+    流式是可选的：stream(request, *, cancel_event=None) -> Iterator[ModelStreamEvent]。
+    没有 stream 的适配器不能走网关的流式入口。
+    cancel_event 要在 chunk 之间检查；网关停掉迭代后会 close 生成器，适配器应在 finally 里关掉上游连接。
+    重试、熔断、限流、换路由不写在适配器里，由进程内 Gateway 统一做。
     """
 
     name: str

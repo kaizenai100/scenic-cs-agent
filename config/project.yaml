@@ -30,9 +30,69 @@ prompt:
   # 拉取超时：超时就走本地兜底文件，不能让 prompt 服务拖垮对话
   fetch_timeout_seconds: 3
 
-# 大模型
+# 大模型（步骤 1–7 的适配器仍可读这一段；新代码请走下面的 gateway）
 model:
   name: deepseek-chat
   base_url: https://api.deepseek.com
   api_key: ${DEEPSEEK_API_KEY}
   timeout_seconds: 60
+
+# ============================================================
+# 进程内 LLM Gateway
+#
+# 业务 / Agent Loop / examples 只通过 Gateway 调模型：
+#   - 代码里拿别名（default / fast），不自己选厂商、不自己重试
+#   - 密钥继续只写 ${VAR}，没配就先把 Gateway 建出来，真调用时再失败
+#   - 这不是一个单独部署的 HTTP 服务，和调用方在同一个进程里
+#
+# 路由策略目前只支持 priority：按 routes 顺序试，前面的失败或熔断打开才用下一条。
+# ============================================================
+gateway:
+  default_alias: default
+  # 结构化校验失败后，最多把错误附回去再请求这么多次。0 表示不修复。
+  structured_output_retries: 1
+  retry:
+    # 含第一次。2 = 失败后再试 1 次。
+    max_attempts_per_route: 2
+    base_delay_seconds: 0.2
+    max_delay_seconds: 2
+    retryable_codes: ["timeout", "connection", "429", "500", "502", "503", "504"]
+  circuit_breaker:
+    failure_threshold: 5
+    cooldown_seconds: 30
+    # 冷却结束后只放 1 个探测，成功才关上，避免积压请求把上游再次打满。
+    half_open_max_probes: 1
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+    burst: 10
+  providers:
+    deepseek:
+      kind: deepseek_chat
+      model: deepseek-chat
+      base_url: https://api.deepseek.com
+      api_key: ${DEEPSEEK_API_KEY}
+      timeout_seconds: 60
+      enabled: true
+    # 备路由。默认仍指向同一家，公开仓不必再引入第二套密钥。
+    # 熔断按 provider 名分开计数：要换成另一家时，改 kind / base_url / api_key 即可。
+    deepseek_backup:
+      kind: deepseek_chat
+      model: deepseek-chat
+      base_url: https://api.deepseek.com
+      api_key: ${DEEPSEEK_API_KEY}
+      timeout_seconds: 60
+      enabled: true
+  aliases:
+    default:
+      strategy: priority
+      routes:
+        - provider: deepseek
+          model: deepseek-chat
+        - provider: deepseek_backup
+          model: deepseek-chat
+    fast:
+      strategy: priority
+      routes:
+        - provider: deepseek
+          model: deepseek-chat
