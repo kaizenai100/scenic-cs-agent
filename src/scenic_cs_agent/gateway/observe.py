@@ -41,6 +41,9 @@ class CallRecord:
     stream: bool
     status: CallStatus
     latency_ms: float
+    # 流式：从这次调用开始到交出第一条事件的毫秒数，含重试等待。非流式一定是 None。
+    # 一条事件都没交出去（失败、取消在首 token 之前、限流）也是 None。
+    ttft_ms: float | None
     input_tokens: int
     output_tokens: int
     # attempts：真正打到适配器的次数。

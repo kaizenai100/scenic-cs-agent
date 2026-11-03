@@ -71,6 +71,7 @@ class _Stats:
     provider: str | None = None
     model: str | None = None
     latency_ms: float = 0.0
+    ttft_ms: float | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     attempts: int = 0
@@ -89,6 +90,7 @@ class _Stats:
             stream=self.stream,
             status=self.status,
             latency_ms=self.latency_ms,
+            ttft_ms=self.ttft_ms,
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             attempts=self.attempts,
@@ -157,7 +159,8 @@ class LLMGateway(ModelAdapter):
         self._structured_retries = structured_output_retries
         self._sink = RecordSink(capacity=record_capacity, on_record=on_record)
         # 用默认路由的能力覆盖类上的保守声明，Agent Loop 若读取 capabilities 能看到真实上游。
-        default_routes = self._router.routes_for(default_alias)
+        # schedule=False：初始化不能消耗一次加权轮询，否则用户的第一次调用会少计一格。
+        default_routes = self._router.routes_for(default_alias, schedule=False)
         self.capabilities = default_routes[0].adapter.capabilities
 
     @property
@@ -240,7 +243,13 @@ class LLMGateway(ModelAdapter):
         try:
             self._acquire_rate_limit(stats)
             try:
-                yield from self._stream_routes(request, alias=alias, cancel_event=cancel_event, stats=stats)
+                yield from self._stream_routes(
+                    request,
+                    alias=alias,
+                    cancel_event=cancel_event,
+                    stats=stats,
+                    started=started,
+                )
             except StreamCancelled as exc:
                 self._mark_terminal(stats, "cancelled", exc)
                 raise
@@ -284,6 +293,12 @@ class LLMGateway(ModelAdapter):
             stats.provider = exc.provider
         if isinstance(exc, PartialStreamError) and stats.provider is None:
             stats.provider = exc.provider
+
+    def _mark_ttft(self, stats: _Stats, started: float) -> None:
+        """只记第一次。非流式不走这里，所以 CallRecord.ttft_ms 保持 None。"""
+        if stats.ttft_ms is not None:
+            return
+        stats.ttft_ms = max(0.0, (self._clock.monotonic() - started) * 1000.0)
 
     def _complete_with_repairs(
         self,
@@ -418,6 +433,7 @@ class LLMGateway(ModelAdapter):
         alias: str | None,
         cancel_event: threading.Event | None,
         stats: _Stats,
+        started: float,
     ) -> Iterator[ModelStreamEvent]:
         routes = self._router.routes_for(alias)
         errors: list[GatewayError] = []
@@ -431,7 +447,7 @@ class LLMGateway(ModelAdapter):
                     route.model,
                 )
             try:
-                yield from self._retry_stream(route, request, cancel_event, stats)
+                yield from self._retry_stream(route, request, cancel_event, stats, started)
                 return
             except _RouteFailed as failed:
                 errors.append(failed.error)
@@ -446,6 +462,7 @@ class LLMGateway(ModelAdapter):
         request: ModelRequest,
         cancel_event: threading.Event | None,
         stats: _Stats,
+        started: float,
     ) -> Iterator[ModelStreamEvent]:
         last: GatewayError | None = None
         for attempt in range(1, self._retry.max_attempts_per_route + 1):
@@ -486,6 +503,8 @@ class LLMGateway(ModelAdapter):
                     if event.type == "model.usage":
                         stats.input_tokens = int(event.data.get("input_tokens") or 0)
                         stats.output_tokens = int(event.data.get("output_tokens") or 0)
+                    # 第一条交给调用方的事件才算 TTFT。重试、换路由如果发生在这之前，时间算进去。
+                    self._mark_ttft(stats, started)
                     yield event
                 if cancel_event is not None and cancel_event.is_set():
                     # 适配器看到取消后直接 return，生成器正常结束。这里仍要告诉调用方是取消，不是成功。

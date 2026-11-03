@@ -45,7 +45,10 @@ model:
 #   - 密钥继续只写 ${VAR}，没配就先把 Gateway 建出来，真调用时再失败
 #   - 这不是一个单独部署的 HTTP 服务，和调用方在同一个进程里
 #
-# 路由策略目前只支持 priority：按 routes 顺序试，前面的失败或熔断打开才用下一条。
+# 路由策略：
+#   priority（默认）按 routes 顺序试，前面的失败或熔断打开才用下一条。weight 可写但不生效。
+#   weighted_round_robin 按 weight 决定这一次先打谁，失败后仍用其余路由 fallback。
+# 未知策略在加载时失败。
 # ============================================================
 gateway:
   default_alias: default
@@ -66,6 +69,11 @@ gateway:
     enabled: true
     requests_per_minute: 60
     burst: 10
+  # 观测走现有 langfuse 段（host / public_key / secret_key / environment）。
+  # 不在这里再配一套地址或密钥。缺密钥时即使 enabled 也不会连出去。
+  # 上报的是调用元数据（别名、provider、耗时、token、重试、fallback、ttft、错误码），不含对话正文。
+  observe:
+    langfuse_enabled: true
   providers:
     deepseek:
       kind: deepseek_chat
@@ -92,7 +100,12 @@ gateway:
         - provider: deepseek_backup
           model: deepseek-chat
     fast:
-      strategy: priority
+      # 权重轮询示例：deepseek 大约每 4 次里有 3 次先被选中，失败再落到备路由。
+      strategy: weighted_round_robin
       routes:
         - provider: deepseek
           model: deepseek-chat
+          weight: 3
+        - provider: deepseek_backup
+          model: deepseek-chat
+          weight: 1
