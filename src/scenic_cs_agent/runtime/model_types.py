@@ -47,6 +47,10 @@ class ModelRequest:
     top_p: float | None = None
     # 非空时：希望模型按该 JSON Schema 输出（本步可先不测）
     output_schema: dict[str, Any] | None = None
+    # 非空时：挂载给模型的工具清单（chat.completions 的 tools 格式，由 ToolRuntime.schemas() 生成）。
+    # 模型看到后可以选择不调工具直接回答，也可以返回 tool_calls 请求调用。
+    # 这里只是"告诉模型有哪些工具"，执行与否、怎么执行由 ToolRuntime 决定。
+    tools: list[dict[str, Any]] | None = None
 
 
 @dataclass

@@ -69,6 +69,11 @@ class DeepSeekChatAdapter(ModelAdapter):
             )
             kwargs["response_format"] = {"type": "json_object"}
 
+        # 挂载工具：只有传了才带 tools 参数。
+        # 不传时模型就是纯对话；传了模型可自行决定是否调用（默认 tool_choice=auto）。
+        if request.tools:
+            kwargs["tools"] = request.tools
+
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature
         if request.top_p is not None:
@@ -103,8 +108,30 @@ class DeepSeekChatAdapter(ModelAdapter):
             except json.JSONDecodeError:
                 data = None
 
+        # 模型决定调工具时：choice.message.tool_calls 非空，finish_reason 通常是 "tool_calls"。
+        # Adapter 的职责只到"归一"为止：把厂商对象转成和厂商无关的 {id, name, arguments}。
+        # 不在这里执行工具，原因：
+        #   1) 单一职责：Adapter 只管协议转换，换厂商不影响工具治理逻辑；
+        #   2) 执行需要可信上下文、白名单、审批等，这些属于 ToolRuntime；
+        #   3) 以后 Loop 要在"模型决策"和"工具执行"之间插入事件、审批、取消，必须分开。
+        # arguments 保持原始 JSON 字符串，不在这里 json.loads：解析失败要交给 ToolRuntime
+        # 统一返回 INVALID_ARGS，而不是让 Adapter 抛异常。
+        tool_calls = [
+            {"id": tc.id, "name": tc.function.name, "arguments": tc.function.arguments}
+            for tc in (choice.message.tool_calls or [])
+        ]
+        # 结果形态优先级：有工具调用 > 结构化 > 普通文本。
+        # 有 tool_calls 时 content 往往为空或只是"我来查一下"，上层应该先执行工具。
+        if tool_calls:
+            kind = "tool_calls"
+        elif request.output_schema:
+            kind = "structured"
+        else:
+            kind = "text"
+
         return ModelResult(
-            kind="structured" if request.output_schema else "text",
+            kind=kind,
+            tool_calls=tool_calls,
             text=text,
             data=data,
             finish_reason=choice.finish_reason,
