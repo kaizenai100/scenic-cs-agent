@@ -145,7 +145,8 @@ class DeepSeekChatAdapter(ModelAdapter):
 
         注意：
         - stream=True 不会让模型推理更快，价值是「可观察 / 可取消 / 先出字」
-        - 这里只做 Adapter 层归一；还没上 FastAPI SSE（步骤稍后）
+        - 这里只做 Adapter 层归一。厂商 chunk 停在这一层；
+          Run 级序号、心跳和 SSE 在 api 包里，不把供应商帧往浏览器传。
         - include_usage=True：最后一块常带 usage（具体以厂商为准）
         """
         messages, kwargs = self._messages_and_kwargs(request)
