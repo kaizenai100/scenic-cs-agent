@@ -51,6 +51,11 @@ class ModelRequest:
     # 模型看到后可以选择不调工具直接回答，也可以返回 tool_calls 请求调用。
     # 这里只是"告诉模型有哪些工具"，执行与否、怎么执行由 ToolRuntime 决定。
     tools: list[dict[str, Any]] | None = None
+    # 多轮对话消息（Agent Loop 用）。非空时 Adapter 优先用它，而不是只拼 system+user。
+    # 约定格式同 OpenAI chat.completions：可含 system / user / assistant / tool；
+    # assistant 带 tool_calls 时，后续必须跟 role=tool 且 tool_call_id 对齐。
+    # 单轮调用（步骤 1–6）继续只填 system+user，本字段保持 None，行为不变。
+    messages: list[dict[str, Any]] | None = None
 
 
 @dataclass

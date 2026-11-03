@@ -57,17 +57,45 @@ class DeepSeekChatAdapter(ModelAdapter):
 
     def _messages_and_kwargs(
         self, request: ModelRequest
-    ) -> tuple[list[dict[str, str]], dict[str, Any]]:
-        """generate / stream 共用：拼 messages 与可选采样参数。"""
-        system = request.system
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """generate / stream 共用：拼 messages 与可选采样参数。
+
+        消息来源二选一（互不混用，避免 system 被拼两次）：
+          1) request.messages 非空 → Agent Loop 多轮：直接用完整历史
+             （含 system / user / assistant+tool_calls / tool 结果）；
+          2) 否则 → 单轮：仅拼 system + user（步骤 1–6 的旧路径）。
+        """
         kwargs: dict[str, Any] = {}
 
-        if request.output_schema:
-            system += (
-                "\n必须输出 json，并符合此 JSON Schema：\n"
-                + json.dumps(request.output_schema, ensure_ascii=False)
-            )
-            kwargs["response_format"] = {"type": "json_object"}
+        if request.messages is not None:
+            # 深拷一份，避免后续改 messages 污染调用方手里的列表。
+            messages: list[dict[str, Any]] = [dict(m) for m in request.messages]
+            # 结构化输出：若有 schema，把约束追加到第一条 system；没有 system 就插一条。
+            if request.output_schema:
+                schema_hint = (
+                    "\n必须输出 json，并符合此 JSON Schema：\n"
+                    + json.dumps(request.output_schema, ensure_ascii=False)
+                )
+                if messages and messages[0].get("role") == "system":
+                    messages[0] = {
+                        **messages[0],
+                        "content": (messages[0].get("content") or "") + schema_hint,
+                    }
+                else:
+                    messages.insert(0, {"role": "system", "content": schema_hint.lstrip()})
+                kwargs["response_format"] = {"type": "json_object"}
+        else:
+            system = request.system
+            if request.output_schema:
+                system += (
+                    "\n必须输出 json，并符合此 JSON Schema：\n"
+                    + json.dumps(request.output_schema, ensure_ascii=False)
+                )
+                kwargs["response_format"] = {"type": "json_object"}
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": request.user},
+            ]
 
         # 挂载工具：只有传了才带 tools 参数。
         # 不传时模型就是纯对话；传了模型可自行决定是否调用（默认 tool_choice=auto）。
@@ -79,10 +107,6 @@ class DeepSeekChatAdapter(ModelAdapter):
         if request.top_p is not None:
             kwargs["top_p"] = request.top_p
 
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": request.user},
-        ]
         return messages, kwargs
 
     def generate(self, request: ModelRequest) -> ModelResult:
