@@ -15,6 +15,8 @@
   5. lru_cache 保证进程内只加载一次（单例）；测试里切环境时调 get_config.cache_clear()。
   6. gateway 段同样走这套合并和校验。别名、重试、熔断、限流写在 yaml 里，
      业务代码只调 Gateway，不在调用点再读一遍上游密钥。
+  7. mcp 段也走这套合并和校验。连哪台服务、允许哪些工具、超时和场景都写在 yaml 里，
+     密钥仍是 ${VAR}，不写进文件。
 """
 
 from __future__ import annotations
@@ -214,6 +216,134 @@ class GatewayConfig(BaseModel):
         return self
 
 
+# 服务名、工具名要能拼进给模型看的函数名：字母开头，只含字母数字下划线。
+_MCP_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,40}$")
+
+
+class McpToolPolicy(BaseModel):
+    """一个远端工具在本地的治理策略。
+
+    超时、只读、审批、场景都以这份配置为准。
+    远端可以在注解里把自己标成只读，那只能当提示，不能当权限——
+    否则一个写操作会被标成可重试，超时后再打一次。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    description: str | None = None  # 省略时用远端自己的说明
+    read_only: bool = False  # 省略时按写操作对待：超时不自动重试
+    timeout_seconds: float = Field(default=3.0, gt=0, le=120)
+    # None 表示没写：写操作默认要审批，只读默认不要。写了 true/false 就按写的来。
+    requires_approval: bool | None = None
+    scenes: list[str] = Field(default_factory=lambda: ["presale", "aftersale"])
+    sensitive_fields: list[str] = Field(default_factory=list)
+
+    @field_validator("description")
+    @classmethod
+    def _description_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("description 不能是空字符串")
+        return value
+
+    @field_validator("scenes")
+    @classmethod
+    def _scenes_not_empty(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value]
+        if not cleaned or any(not item for item in cleaned):
+            raise ValueError("scenes 不能为空")
+        return cleaned
+
+    @field_validator("sensitive_fields")
+    @classmethod
+    def _sensitive_not_blank(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value]
+        if any(not item for item in cleaned):
+            raise ValueError("sensitive_fields 不能有空名字")
+        return cleaned
+
+
+class McpServerConfig(BaseModel):
+    """一台 MCP 服务。stdio 是本机子进程，http 是官方的 streamable HTTP。"""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    transport: Literal["stdio", "http"]
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    # 值可以是 None：${VAR:-} 没配时加载器会给 None，连接时直接丢掉这个变量。
+    env: dict[str, str | None] = Field(default_factory=dict)
+    cwd: str | None = None
+    url: str | None = None
+    headers: dict[str, str | None] = Field(default_factory=dict)
+    startup_timeout_seconds: float = Field(default=15, gt=0, le=120)
+    # required 的服务起不来、列不出工具、或允许的工具注册不上，整个连接失败。
+    # 否则只记下错误，其它服务继续。
+    required: bool = True
+    # 允许列表。服务器还列出了别的工具也不注册，避免一个服务突然多一个危险工具就进了模型。
+    tools: dict[str, McpToolPolicy]
+
+    @field_validator("command", "url", "cwd")
+    @classmethod
+    def _strip_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("url")
+    @classmethod
+    def _url_scheme(cls, value: str | None) -> str | None:
+        if value is not None and not value.startswith(("http://", "https://")):
+            raise ValueError("url 必须以 http:// 或 https:// 开头")
+        return value
+
+    @model_validator(mode="after")
+    def _fields_match_transport(self) -> Self:
+        if not self.tools:
+            raise ValueError("tools 允许列表不能为空；没写进列表的远端工具不会注册")
+        if self.transport == "stdio":
+            if not self.command:
+                raise ValueError("stdio 传输必须配置 command")
+            if self.url is not None or self.headers:
+                raise ValueError("stdio 传输不能配置 url 或 headers")
+        else:
+            if not self.url:
+                raise ValueError("http 传输必须配置 url")
+            if self.command or self.args or self.env or self.cwd:
+                raise ValueError("http 传输不能配置 command、args、env 或 cwd")
+        return self
+
+
+class McpConfig(BaseModel):
+    """MCP 客户端配置。enabled=false 时一台服务都不连。"""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    # 暴露给模型的名字：{服务名}{分隔符}{远端工具名}，避免和本地工具撞车。
+    name_separator: str = "__"
+    servers: dict[str, McpServerConfig] = Field(default_factory=dict)
+
+    @field_validator("name_separator")
+    @classmethod
+    def _separator_charset(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,8}", value):
+            raise ValueError("name_separator 只能是 1–8 位字母、数字或下划线")
+        return value
+
+    @model_validator(mode="after")
+    def _names_are_safe(self) -> Self:
+        for name, spec in self.servers.items():
+            if not _MCP_NAME.fullmatch(name):
+                raise ValueError(f"MCP 服务名不合法：{name}")
+            for tool_name in spec.tools:
+                if not _MCP_NAME.fullmatch(tool_name):
+                    raise ValueError(f"MCP 工具名不合法：{name}.{tool_name}")
+                # 模型侧函数名一般不超过 64 字符，超了就在启动时失败，别等到调用。
+                exposed = f"{name}{self.name_separator}{tool_name}"
+                if len(exposed) > 64:
+                    raise ValueError(f"暴露给模型的工具名超过 64 字符：{exposed}")
+        return self
+
+
 class AppConfig(BaseModel):
     """整个应用的配置根对象。frozen：运行期不允许被某个模块偷偷改掉。"""
 
@@ -224,6 +354,7 @@ class AppConfig(BaseModel):
     prompt: PromptConfig
     model: ModelConfig
     gateway: GatewayConfig
+    mcp: McpConfig
 
 
 # ---------------- 加载流程 ----------------

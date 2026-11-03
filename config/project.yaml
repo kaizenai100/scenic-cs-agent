@@ -109,3 +109,58 @@ gateway:
         - provider: deepseek_backup
           model: deepseek-chat
           weight: 1
+
+# ============================================================
+# MCP（Model Context Protocol）
+#
+# 远端工具先收成普通 Tool，再放进 ToolRuntime。
+# 参数校验、场景白名单、审批、超时、审计都走 Runtime，不能绕开。
+#
+# tools 是允许列表：服务还列出了别的工具也不会注册。
+# 只读、超时、审批、场景以这里为准，不采信远端自己标的 readOnlyHint。
+# read_only 省略时当成写操作（超时不自动重试）。
+# 写操作没写 requires_approval 时，默认要先审批。
+#
+# 给模型看的名字是「服务名 + name_separator + 工具名」。
+# 和已有工具撞名就拒绝这一条，不覆盖。
+#
+# 密钥仍然只写 ${VAR}。没配或展开后是空的，就不会传给子进程 / 请求头。
+# ============================================================
+mcp:
+  enabled: true
+  name_separator: "__"
+  servers:
+    scenic_ticket:
+      enabled: true
+      transport: stdio
+      # 在仓库根目录用 `uv run` 启动时，PATH 上的 python 就是本项目的解释器。
+      command: python
+      args:
+        - -m
+        - scenic_cs_agent.mcp_server
+      env:
+        SCENIC_MCP_TOKEN: ${SCENIC_MCP_TOKEN:-}
+      startup_timeout_seconds: 15
+      required: true
+      tools:
+        query_ticket_order:
+          read_only: true
+          timeout_seconds: 3
+          scenes: [presale, aftersale]
+        get_opening_hours:
+          read_only: true
+          timeout_seconds: 3
+          scenes: [presale, aftersale]
+    # 默认不连。配好地址后把 enabled 改成 true。令牌走请求头，不写进 url。
+    ticket_http:
+      enabled: false
+      transport: http
+      url: ${MCP_HTTP_URL:-http://127.0.0.1:9/mcp}
+      headers:
+        Authorization: ${MCP_HTTP_TOKEN:-}
+      startup_timeout_seconds: 5
+      required: false
+      tools:
+        query_ticket_order:
+          read_only: true
+          timeout_seconds: 3

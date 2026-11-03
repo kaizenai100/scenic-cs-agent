@@ -14,3 +14,9 @@ gateway:
     failure_threshold: 3
   rate_limit:
     requests_per_minute: 120
+
+# mock MCP 跟测试环境走。启动超时比公共配置短，连不上尽快失败。
+mcp:
+  servers:
+    scenic_ticket:
+      startup_timeout_seconds: 10
