@@ -7,3 +7,10 @@ prompt:
 
 langfuse:
   environment: test
+
+# 测试环境把熔断调灵敏、限流放宽。其余 gateway 字段仍用 project.yaml，靠深合并保留。
+gateway:
+  circuit_breaker:
+    failure_threshold: 3
+  rate_limit:
+    requests_per_minute: 120

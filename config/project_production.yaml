@@ -7,3 +7,8 @@ prompt:
 
 langfuse:
   environment: production
+
+# 生产冷却比公共默认更长，避免上游抖动时半开探测太密。阈值和限流沿用 project.yaml。
+gateway:
+  circuit_breaker:
+    cooldown_seconds: 45

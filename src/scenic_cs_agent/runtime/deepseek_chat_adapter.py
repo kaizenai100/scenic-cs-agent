@@ -45,14 +45,17 @@ class DeepSeekChatAdapter(ModelAdapter):
         api_key: str | None = None,
         model: str = "deepseek-chat",
         base_url: str = "https://api.deepseek.com",
+        timeout: float = 60.0,
     ) -> None:
         self.model = model
-        # OpenAI 官方 SDK，只改 base_url + key 就能打 DeepSeek
+        self.timeout = timeout
+        # OpenAI 官方 SDK，只改 base_url + key 就能打 DeepSeek。
+        # max_retries=0：重试、熔断、换路由都在 Gateway，SDK 再重试会把次数乘上去。
         self.client = OpenAI(
             api_key=api_key or os.environ["DEEPSEEK_API_KEY"],
             base_url=base_url,
-            timeout=60.0,  # 流式可能更久，略放宽
-            max_retries=0,  # 重试留给上层 Gateway/Loop，避免 SDK×上层双重重试
+            timeout=timeout,
+            max_retries=0,
         )
 
     def _messages_and_kwargs(
@@ -164,7 +167,12 @@ class DeepSeekChatAdapter(ModelAdapter):
             request_id=raw.id,
         )
 
-    def stream(self, request: ModelRequest) -> Iterator[ModelStreamEvent]:
+    def stream(
+        self,
+        request: ModelRequest,
+        *,
+        cancel_event: Any | None = None,
+    ) -> Iterator[ModelStreamEvent]:
         """流式：边收边 yield 统一事件。
 
         注意：
@@ -172,6 +180,9 @@ class DeepSeekChatAdapter(ModelAdapter):
         - 这里只做 Adapter 层归一。厂商 chunk 停在这一层；
           Run 级序号、心跳和 SSE 在 api 包里，不把供应商帧往浏览器传。
         - include_usage=True：最后一块常带 usage（具体以厂商为准）
+        - cancel_event 是协作式的：每拿到一个 chunk 看一次。Gateway 停止迭代时会 close 本生成器，
+          finally 里关掉 SDK 的流，避免调用方已经不要了，HTTP 还在后台读完。
+          单次阻塞的建连无法从另一线程打断，那是当前骨架的边界。
         """
         messages, kwargs = self._messages_and_kwargs(request)
 
@@ -184,30 +195,39 @@ class DeepSeekChatAdapter(ModelAdapter):
             **kwargs,
         )
 
-        for chunk in raw:
-            choice = chunk.choices[0] if chunk.choices else None
+        try:
+            for chunk in raw:
+                # 只认有 is_set 的对象，这样 threading.Event 能用，测试也能塞一个假开关。
+                if cancel_event is not None and bool(cancel_event.is_set()):
+                    return
+                choice = chunk.choices[0] if chunk.choices else None
 
-            # 增量正文：打字机效果的数据面
-            if choice and choice.delta and choice.delta.content:
-                yield ModelStreamEvent(
-                    type="text.delta",
-                    data={"delta": choice.delta.content},
-                )
+                # 增量正文：打字机效果的数据面
+                if choice and choice.delta and choice.delta.content:
+                    yield ModelStreamEvent(
+                        type="text.delta",
+                        data={"delta": choice.delta.content},
+                    )
 
-            # 模型侧结束原因（stop / length / ...）
-            if choice and choice.finish_reason:
-                yield ModelStreamEvent(
-                    type="model.finished",
-                    data={"finish_reason": choice.finish_reason},
-                )
+                # 模型侧结束原因（stop / length / ...）
+                if choice and choice.finish_reason:
+                    yield ModelStreamEvent(
+                        type="model.finished",
+                        data={"finish_reason": choice.finish_reason},
+                    )
 
-            # 用量常在流末尾单独一块；没有 choices 也正常
-            if chunk.usage is not None:
-                yield ModelStreamEvent(
-                    type="model.usage",
-                    data={
-                        "input_tokens": chunk.usage.prompt_tokens,
-                        "output_tokens": chunk.usage.completion_tokens,
-                        "total_tokens": chunk.usage.total_tokens,
-                    },
-                )
+                # 用量常在流末尾单独一块；没有 choices 也正常
+                if chunk.usage is not None:
+                    yield ModelStreamEvent(
+                        type="model.usage",
+                        data={
+                            "input_tokens": chunk.usage.prompt_tokens,
+                            "output_tokens": chunk.usage.completion_tokens,
+                            "total_tokens": chunk.usage.total_tokens,
+                        },
+                    )
+        finally:
+            # Gateway 取消或调用方关闭生成器时，把上游流一起关掉。
+            closer = getattr(raw, "close", None)
+            if callable(closer):
+                closer()

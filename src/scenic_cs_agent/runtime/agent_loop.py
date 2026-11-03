@@ -10,6 +10,10 @@
   Agent Loop       → 组装消息 → 调模型 → 若有 tool_calls 则经 Runtime 执行并回灌 → 重复
   LoopGuard        → max_turns / 重复动作指纹 / cancel_event
 
+调模型的对象仍是 ModelAdapter。生产路径应传入 LLMGateway（它实现了 generate），
+这样重试、熔断、限流、别名路由留在网关里，Loop 不读上游密钥。
+步骤 7 的脚本适配器可以直接传进来，行为不变。
+
 协议停止 ≠ 业务完成：
   模型本轮不返回 tool_calls（protocol_stop）只说明「协议上它想说话了」；
   并不保证票价/开放时间已经查全、用户问题已经答完。
@@ -159,7 +163,8 @@ def run_agent_loop(
             max_output_tokens=max_output_tokens,
             temperature=temperature,
         )
-        # 本步用非流式 generate；流式 + SSE 挂接留给后续步骤。
+        # 非流式 generate。adapter 可以是厂商适配器，也可以是 LLMGateway。
+        # 流式 + SSE 挂接留给后续步骤；网关自己的 stream 不从这里走。
         result = adapter.generate(request)
 
         # 先把 assistant 消息推进历史（无论是否带 tool_calls），保证回放完整。

@@ -47,12 +47,15 @@ class DeepSeekResponsesAdapter(ModelAdapter):
         api_key: str | None = None,
         model: str = "deepseek-flash",
         base_url: str = "https://api.deepseek.com",
+        timeout: float = 60.0,
     ) -> None:
         self.model = model
+        self.timeout = timeout
+        # max_retries=0：重试交给 Gateway，避免 SDK 和网关各重试一遍。
         self.client = OpenAI(
             api_key=api_key or os.environ["DEEPSEEK_API_KEY"],
             base_url=base_url,
-            timeout=60.0,
+            timeout=timeout,
             max_retries=0,
         )
 

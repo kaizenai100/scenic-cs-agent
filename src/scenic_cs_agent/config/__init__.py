@@ -3,9 +3,17 @@
 from scenic_cs_agent.config.loader import (
     AppConfig,
     ConfigError,
+    GatewayConfig,
     get_config,
     load_config,
     resolve_env,
 )
 
-__all__ = ["AppConfig", "ConfigError", "get_config", "load_config", "resolve_env"]
+__all__ = [
+    "AppConfig",
+    "ConfigError",
+    "GatewayConfig",
+    "get_config",
+    "load_config",
+    "resolve_env",
+]
