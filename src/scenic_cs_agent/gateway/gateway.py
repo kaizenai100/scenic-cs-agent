@@ -64,21 +64,36 @@ class _RouteFailed(Exception):
 class _Stats:
     """一次用户调用的可变记账。结束时收成不可变的 CallRecord。"""
 
+    # 本次调用的短 id，记录和日志用来对上同一次请求。
     call_id: str
+    # 业务选的模型别名；调用方没传时记 default_alias。
     alias: str
+    # True 走 stream，False 走 complete。
     stream: bool
+    # 结束态：ok / error / cancelled / rate_limited / circuit_open。先记 error，成功再改成 ok。
     status: CallStatus = "error"
+    # 实际打到的上游。全部失败时停在最后一条试过的路由上。
     provider: str | None = None
+    # 该上游绑定的模型名。
     model: str | None = None
+    # 用户侧总耗时（毫秒），含退避等待，不是纯上游往返。
     latency_ms: float = 0.0
+    # 流式：从调用开始到交出第一条事件的毫秒数。非流式，或一条都没交出去，保持 None。
     ttft_ms: float | None = None
+    # 输入 / 输出 token。非流式按每次成功结果累加（含结构化修复）；流式记最后一条 usage。
     input_tokens: int = 0
     output_tokens: int = 0
+    # 真正打到适配器的次数。熔断直接拒绝不算。
     attempts: int = 0
+    # 是否用过备路由（第一条之后的路由）。
     fallback: bool = False
+    # 失败时的稳定错误码。成功为 None。
     error_code: str | None = None
+    # 结构化校验失败后的额外完整调用次数，不含第一次。
     repair_count: int = 0
+    # 同一条路由上因可重试错误多打的次数，不含第一次，也不含结构化修复。
     retries: int = 0
+    # 每次尝试的明细。结束时冻成 CallRecord.attempt_log。
     attempt_log: list[AttemptRecord] = field(default_factory=list)
 
     def to_record(self) -> CallRecord:
@@ -103,10 +118,23 @@ class _Stats:
 
 
 class LLMGateway(ModelAdapter):
-    """统一入口。生产路径用 complete / stream；generate 是给现有 Agent Loop 的适配器兼容口。"""
+    """统一入口。生产路径用 complete / stream；generate 是给现有 Agent Loop 的适配器兼容口。
 
+    构造参数收进下面这些实例字段：
+    _clock：单调时钟。重试 sleep、熔断冷却、令牌桶补桶、耗时都读它。
+    _retry：同一条路由的重试策略（次数、退避、哪些错误码可重试）。
+    _router：别名路由表。bindings 是上游适配器，aliases 决定顺序和 strategy。
+    _circuits：按 provider 的熔断器，别名之间共享。
+    _rate：进程内令牌桶。一次 complete / stream 扣 1 个，重试和换路由不再扣。
+    _structured_retries：结构化校验失败后，最多再完整调用几次（不含第一次）。
+    _sink：定长内存记录，写完后可选调用 on_record。
+    capabilities：默认路由那个适配器的真实能力，构造时盖掉类上的保守声明。
+    """
+
+    # ModelAdapter 要求的名字。日志和 Agent Loop 用它认出这是网关，不是某一家上游。
     name = "llm-gateway"
     # 真实能力取决于被选中的适配器。这里给一个保守声明，避免有人把 Gateway 当「什么都能做」。
+    # __init__ 会用默认路由的适配器能力覆盖这个类属性。
     capabilities = ModelCapabilities(
         chat_completions=True,
         responses=False,
@@ -119,30 +147,50 @@ class LLMGateway(ModelAdapter):
     def __init__(
         self,
         *,
+        # provider 名 → 已注册上游（适配器 + 绑定模型）。路由从这里取「打哪家」。
         bindings: Mapping[str, ProviderBinding],
+        # 别名 → 策略和候选路由。strategy 只有 priority（按配置顺序）
+        # 和 weighted_round_robin（按 weight 选这一次先打谁，后面仍按原顺序兜底）。
         aliases: Mapping[str, AliasSpec],
+        # 调用方不传 alias 时走这条。必须是 aliases 里的键。
         default_alias: str,
+        # 同一条路由的重试预算。不传用 RetryPolicy 默认：max_attempts_per_route=2（含第一次），指数退避。
+        # 单次上游超时在适配器上；这里只管失败之后要不要再试、等多久。
         retry: RetryPolicy | None = None,
+        # 可注入的单调时钟。不传用系统钟。测试传入假时钟，避免真的 sleep。
         clock: Clock | None = None,
+        # 同一 provider 连续失败多少次后熔断打开。按 provider 计，不按别名。
         failure_threshold: int = 5,
+        # 熔断打开后的冷却秒数。冷却期内直接拒绝，不打上游。
         cooldown_seconds: float = 30.0,
+        # 冷却结束后进入半开，同时允许几路探测。成功才重新关上。
         half_open_max_probes: int = 1,
+        # False 时令牌桶不扣令牌，等于关掉本进程限流。
         rate_limit_enabled: bool = True,
+        # 每分钟补充多少令牌。一次业务调用扣 1 个。
         requests_per_minute: int = 60,
+        # 桶容量。冷启动是满的，允许短时间突发这么多次。
         burst: int = 10,
+        # 结构化校验失败后，最多再完整调用几次。不含第一次。单次可用 complete(max_repairs=...) 覆盖。
         structured_output_retries: int = 1,
+        # 内存里最多留多少条 CallRecord，超出丢掉最旧的。
         record_capacity: int = 500,
+        # 每条记录写完后的回调，观测出口。工厂可把 Langfuse 挂在这里。回调抛错不影响模型结果。
         on_record: Callable[[CallRecord], None] | None = None,
     ) -> None:
         if structured_output_retries < 0:
             raise ValueError("structured_output_retries 不能为负")
+        # 重试等待、熔断冷却、令牌桶补桶、latency / ttft 共用这一把钟。
         self._clock = clock or SystemClock()
+        # 次数、退避和可重试错误码。缺省是 RetryPolicy()。
         self._retry = retry or RetryPolicy()
+        # 别名路由表。bindings、aliases、default_alias 都收在这张表里。
         self._router = Router(
             bindings=dict(bindings),
             aliases=dict(aliases),
             default_alias=default_alias,
         )
+        # 每个已注册 provider 一把熔断器。阈值、冷却、半开探测上限来自构造参数。
         self._circuits = CircuitBreakerGroup(
             bindings.keys(),
             threshold=failure_threshold,
@@ -150,13 +198,16 @@ class LLMGateway(ModelAdapter):
             half_open_max_probes=half_open_max_probes,
             clock=self._clock,
         )
+        # 进程内令牌桶。rate_limit_enabled 为假时 acquire 直接放行。
         self._rate = TokenBucket(
             requests_per_minute=requests_per_minute,
             burst=burst,
             clock=self._clock,
             enabled=rate_limit_enabled,
         )
+        # 结构化修复次数上限。
         self._structured_retries = structured_output_retries
+        # 定长调用记录，外加可选 on_record（日志或 Langfuse 一类观测回调）。
         self._sink = RecordSink(capacity=record_capacity, on_record=on_record)
         # 用默认路由的能力覆盖类上的保守声明，Agent Loop 若读取 capabilities 能看到真实上游。
         # schedule=False：初始化不能消耗一次加权轮询，否则用户的第一次调用会少计一格。
