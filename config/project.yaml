@@ -1,0 +1,38 @@
+# ============================================================
+# 公共默认配置（所有环境共用）
+#
+# 加载顺序：先读本文件，再用 project_<env>.yaml 深合并覆盖。
+#   - 环境文件里只写“和默认不一样”的项，避免多份文件复制粘贴后漂移。
+#   - 当前环境由环境变量 APP_ENV 决定（test / production），见 config/loader.py。
+#
+# 密钥约定：本仓是公开仓，yaml 里绝不写真实密钥。
+#   - 写成 ${VAR} 占位，加载时从环境变量 / .env 取值；
+#   - ${VAR:-默认值} 表示没配时用默认值；
+#   - 不带默认值且没配 → 启动直接报错（fail fast，别等到调用模型才炸）。
+# ============================================================
+
+project_name: scenic-cs-agent
+
+# Langfuse：prompt 管理 + trace
+langfuse:
+  host: ${LANGFUSE_HOST:-http://localhost:3300}
+  public_key: ${LANGFUSE_PUBLIC_KEY}
+  secret_key: ${LANGFUSE_SECRET_KEY}
+  # trace 打上环境标签，Langfuse 后台能按环境筛，测试流量不会混进生产看板
+  environment: test
+
+# Prompt 拉取策略
+prompt:
+  # 拉 Langfuse 上哪个 label 的版本；test 环境拉 test，生产拉 production
+  label: test
+  # SDK 本地缓存秒数：越短改完生效越快，越长对 Langfuse 压力越小
+  cache_ttl_seconds: 30
+  # 拉取超时：超时就走本地兜底文件，不能让 prompt 服务拖垮对话
+  fetch_timeout_seconds: 3
+
+# 大模型
+model:
+  name: deepseek-chat
+  base_url: https://api.deepseek.com
+  api_key: ${DEEPSEEK_API_KEY}
+  timeout_seconds: 60

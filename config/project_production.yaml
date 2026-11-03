@@ -1,0 +1,9 @@
+# 生产环境：只写和 project.yaml 不同的项
+prompt:
+  # 线上只认 production label；发布 / 回滚 = 在 Langfuse 上挪这个 label，不改代码
+  label: production
+  # 生产缓存长一点，减少对 Langfuse 的请求；回滚最多延迟这么多秒生效
+  cache_ttl_seconds: 60
+
+langfuse:
+  environment: production

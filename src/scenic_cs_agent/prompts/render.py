@@ -29,6 +29,7 @@ class RenderedPrompt:
 
     text: str
     name: str
+    label: str  # 实际使用的 Langfuse label（test / production），由环境配置决定
     version: str  # Langfuse 版本号，兜底时为 "local"
     source: str  # "langfuse" | "local-fallback"
     fingerprint: str

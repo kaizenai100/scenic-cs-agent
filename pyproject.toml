@@ -9,6 +9,7 @@ dependencies = [
     "openai>=3.41.0",
     "pydantic>=2.14.2",
     "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
 ]
 
 [build-system]

@@ -1,0 +1,9 @@
+# 测试环境：只写和 project.yaml 不同的项（目前默认值就是测试值）
+# prompt 用 test label：新版 prompt 先只打 test，在这里验证通过后再把 production 指过去
+prompt:
+  label: test
+  # 测试环境改 prompt 频繁，缓存短一点，改完马上能看到效果
+  cache_ttl_seconds: 5
+
+langfuse:
+  environment: test
