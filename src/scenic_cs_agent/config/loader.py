@@ -129,7 +129,8 @@ class ProviderConfig(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["deepseek_chat", "deepseek_responses", "openai_responses"]
+    # fake：进程内假模型，不访问网络、不需要密钥。测试环境用它把一轮对话跑通。
+    kind: Literal["deepseek_chat", "deepseek_responses", "openai_responses", "fake"]
     model: str = Field(min_length=1)
     base_url: str | None = None
     api_key: str | None = None

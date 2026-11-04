@@ -40,7 +40,7 @@ model:
 # ============================================================
 # 进程内 LLM Gateway
 #
-# 业务 / Agent Loop / examples 只通过 Gateway 调模型：
+# 业务和 Agent Loop 只通过 Gateway 调模型：
 #   - 代码里拿别名（default / fast），不自己选厂商、不自己重试
 #   - 密钥继续只写 ${VAR}，没配就先把 Gateway 建出来，真调用时再失败
 #   - 这不是一个单独部署的 HTTP 服务，和调用方在同一个进程里
@@ -137,7 +137,7 @@ mcp:
       command: python
       args:
         - -m
-        - scenic_cs_agent.mcp_server
+        - scenic_cs_agent.mcp.server
       env:
         SCENIC_MCP_TOKEN: ${SCENIC_MCP_TOKEN:-}
       startup_timeout_seconds: 15

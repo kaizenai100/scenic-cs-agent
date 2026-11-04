@@ -651,10 +651,11 @@ def test_config_deep_merge_keeps_gateway_defaults():
     assert prod_cfg.gateway.circuit_breaker.failure_threshold == 5
     assert prod_cfg.gateway.circuit_breaker.cooldown_seconds == 45
     assert prod_cfg.gateway.retry.max_delay_seconds == 2
-    assert [route.provider for route in test_cfg.gateway.aliases["default"].routes] == [
-        "deepseek",
-        "deepseek_backup",
-    ]
+    assert [route.provider for route in test_cfg.gateway.aliases["default"].routes] == ["fake"]
+    assert test_cfg.gateway.providers["fake"].kind == "fake"
+    assert test_cfg.gateway.providers["fake"].model == "fake-presale"
+    assert "deepseek" in test_cfg.gateway.providers
+    assert "deepseek_backup" in test_cfg.gateway.providers
     assert test_cfg.gateway.aliases["default"].strategy == "priority"
     fast = test_cfg.gateway.aliases["fast"]
     assert fast.strategy == "weighted_round_robin"
@@ -691,15 +692,11 @@ def test_config_fail_fast_on_bad_route_and_strategy():
 def test_factory_uses_injected_adapters_and_rejects_unknown_names():
     cfg = load_config("test")
     primary = FakeAdapter(text="工厂主路由")
-    backup = FakeAdapter(text="工厂备路由")
-    gateway = build_gateway_from_config(
-        cfg,
-        adapters={"deepseek": primary, "deepseek_backup": backup},
-    )
+    gateway = build_gateway_from_config(cfg, adapters={"fake": primary})
 
     result = gateway.complete(ModelRequest(system="s", user="你好"))
     assert result.text == "工厂主路由"
-    assert backup.calls == 0
+    assert primary.calls == 1
 
     with pytest.raises(ConfigError):
         build_gateway_from_config(cfg, adapters={"no-such": FakeAdapter()})
@@ -709,7 +706,8 @@ def test_factory_without_api_key_does_not_call_vendor(monkeypatch: pytest.Monkey
     """清空密钥后构建网关，调用应立刻 missing_api_key，不能去 new 真实客户端。"""
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    cfg = load_config("test")
+    # 测试环境的 default 是假模型，不需要密钥。缺密钥的行为用生产配置里的真实 provider 锁住。
+    cfg = load_config("production")
     cleared = {
         name: provider.model_copy(update={"api_key": None})
         for name, provider in cfg.gateway.providers.items()
@@ -879,10 +877,7 @@ def test_langfuse_sink_is_noop_without_keys(monkeypatch: pytest.MonkeyPatch):
     )
     gateway = build_gateway_from_config(
         cfg,
-        adapters={
-            "deepseek": FakeAdapter(text="不上报"),
-            "deepseek_backup": FakeAdapter(text="备"),
-        },
+        adapters={"fake": FakeAdapter(text="不上报")},
     )
     assert gateway.complete(ModelRequest(system="s", user="hi")).text == "不上报"
 
@@ -893,10 +888,7 @@ def test_langfuse_sink_records_call_and_can_be_disabled():
     seen: list[object] = []
     gateway = build_gateway_from_config(
         cfg,
-        adapters={
-            "deepseek": FakeAdapter(text="已记录"),
-            "deepseek_backup": FakeAdapter(text="备"),
-        },
+        adapters={"fake": FakeAdapter(text="已记录")},
         langfuse_client=client,
         on_record=seen.append,
     )
@@ -906,16 +898,16 @@ def test_langfuse_sink_records_call_and_can_be_disabled():
     meta = client.started[0]["metadata"]
     assert client.started[0]["name"] == "gateway.complete"
     assert client.started[0]["as_type"] == "generation"
-    assert client.started[0]["model"] == "deepseek-chat"
+    assert client.started[0]["model"] == "fake-presale"
     assert meta["alias"] == "default"
-    assert meta["provider"] == "deepseek"
+    assert meta["provider"] == "fake"
     assert meta["fallback"] is False
     assert meta["retries"] == 0
     assert meta["ttft_ms"] is None
     assert meta["error_code"] is None
     assert "上次输出" not in str(client.started[0])
     assert client.started[0]["usage_details"]["input"] == 1
-    assert seen and seen[0].provider == "deepseek"  # type: ignore[attr-defined]
+    assert seen and seen[0].provider == "fake"  # type: ignore[attr-defined]
 
     client.fail = True
     assert gateway.complete(ModelRequest(system="s", user="再来")).text == "已记录"
@@ -932,10 +924,7 @@ def test_langfuse_sink_records_call_and_can_be_disabled():
     quiet = _FakeLangfuse()
     off = build_gateway_from_config(
         disabled,
-        adapters={
-            "deepseek": FakeAdapter(text="关掉了"),
-            "deepseek_backup": FakeAdapter(text="备"),
-        },
+        adapters={"fake": FakeAdapter(text="关掉了")},
         langfuse_client=quiet,
     )
     assert off.complete(ModelRequest(system="s", user="hi")).text == "关掉了"
@@ -954,7 +943,7 @@ def test_langfuse_stream_generation_includes_ttft():
     client = _FakeLangfuse()
     gateway = build_gateway_from_config(
         cfg,
-        adapters={"deepseek": Once(), "deepseek_backup": FakeAdapter()},
+        adapters={"fake": Once()},
         langfuse_client=client,
         clock=FakeClock(),
     )

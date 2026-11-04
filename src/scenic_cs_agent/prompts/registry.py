@@ -20,10 +20,11 @@ from __future__ import annotations
 import logging
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from langfuse import Langfuse
 
-from scenic_cs_agent.config import get_config
+from scenic_cs_agent.config import AppConfig, get_config
 from scenic_cs_agent.prompts.render import RenderedPrompt, fingerprint, render_template
 
 PROMPTS_DIR = Path(__file__).resolve().parent
@@ -90,3 +91,58 @@ def get_prompt(
         source="local-fallback" if is_fallback else "langfuse",
         fingerprint=fingerprint(text),
     )
+
+
+class PromptRegistry:
+    """进程启动时建好的 prompt 入口。对话只从这里取。
+
+    client 为空表示这次不连 Langfuse：模板用本地文件，并且不会在每条对话里重复报警。
+    有客户端但拉取失败时，仍回落到本地文件，并打一条警告。
+    """
+
+    def __init__(self, config: AppConfig, client: Any | None) -> None:
+        # 当前环境要拉的 label。调用方不传 label 时用它。
+        self.label = config.prompt.label
+        self._cache_ttl_seconds = config.prompt.cache_ttl_seconds
+        self._fetch_timeout_seconds = config.prompt.fetch_timeout_seconds
+        self._client = client
+
+    def get(
+        self,
+        name: str,
+        variables: dict[str, str],
+        *,
+        label: str | None = None,
+    ) -> RenderedPrompt:
+        """取一份 prompt 并渲染。规则和 get_prompt 相同，客户端用启动时那一个。"""
+
+        label = label or self.label
+        fallback = local_template(name)
+        client = self._client
+        if client is None:
+            template, is_fallback, version = fallback, True, "local"
+        else:
+            try:
+                prompt = client.get_prompt(
+                    name,
+                    label=label,
+                    type="text",
+                    fallback=fallback,
+                    cache_ttl_seconds=self._cache_ttl_seconds,
+                    fetch_timeout_seconds=self._fetch_timeout_seconds,
+                    max_retries=0,
+                )
+                template, is_fallback, version = prompt.prompt, prompt.is_fallback, str(prompt.version)
+            except Exception:
+                template, is_fallback, version = fallback, True, "local"
+        if is_fallback and client is not None:
+            logger.warning("prompt %s label=%s 拉取失败，使用本地兜底", name, label)
+        text = render_template(template, variables)
+        return RenderedPrompt(
+            text=text,
+            name=name,
+            label=label,
+            version="local" if is_fallback else version,
+            source="local-fallback" if is_fallback else "langfuse",
+            fingerprint=fingerprint(text),
+        )

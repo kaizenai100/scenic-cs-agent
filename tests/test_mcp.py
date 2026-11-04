@@ -21,8 +21,8 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from scenic_cs_agent.config import McpConfig, McpServerConfig, McpToolPolicy, load_config
-from scenic_cs_agent.mcp_client import McpHub, McpStartupError, stdio_parameters
-from scenic_cs_agent.mcp_server import server as mcp_http_server
+from scenic_cs_agent.mcp.client import McpHub, McpStartupError, stdio_parameters
+from scenic_cs_agent.mcp.server import server as mcp_http_server
 from scenic_cs_agent.runtime.agent_loop import run_agent_loop
 from scenic_cs_agent.runtime.loop_guard import LoopGuard
 from scenic_cs_agent.runtime.model_types import (
@@ -167,7 +167,7 @@ def test_config_loads_per_environment(monkeypatch: pytest.MonkeyPatch):
     assert scenic.enabled is True
     assert scenic.transport == "stdio"
     assert scenic.command == "python"
-    assert scenic.args == ["-m", "scenic_cs_agent.mcp_server"]
+    assert scenic.args == ["-m", "scenic_cs_agent.mcp.server"]
     assert scenic.startup_timeout_seconds == 10
     assert scenic.required is True
     assert scenic.env["SCENIC_MCP_TOKEN"] == "tok-from-env"
@@ -212,13 +212,13 @@ def test_stdio_parameters_drop_empty_secrets():
     spec = McpServerConfig(
         transport="stdio",
         command="python",
-        args=["-m", "scenic_cs_agent.mcp_server"],
+        args=["-m", "scenic_cs_agent.mcp.server"],
         env={"SCENIC_MCP_TOKEN": None, "KEEP": "yes"},
         tools={"query_ticket_order": _policy()},
     )
     params = stdio_parameters(spec)
     assert params.command == "python"
-    assert params.args == ["-m", "scenic_cs_agent.mcp_server"]
+    assert params.args == ["-m", "scenic_cs_agent.mcp.server"]
     assert params.env == {"KEEP": "yes"}
 
     empty = spec.model_copy(update={"env": {"SCENIC_MCP_TOKEN": None}})
@@ -664,7 +664,7 @@ def test_stdio_roundtrip_governance_and_process_exit(tmp_path, caplog: pytest.Lo
         "scenic_ticket": McpServerConfig(
             transport="stdio",
             command=sys.executable,
-            args=["-m", "scenic_cs_agent.mcp_server"],
+            args=["-m", "scenic_cs_agent.mcp.server"],
             env={"SCENIC_MCP_PIDFILE": str(pidfile)},
             startup_timeout_seconds=20,
             tools={

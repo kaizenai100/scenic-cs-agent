@@ -53,6 +53,8 @@ def build_gateway_from_config(
             continue
         if name in injected:
             adapter: ModelAdapter = injected[name]
+        elif provider.kind == "fake":
+            adapter = _create_fake_adapter()
         elif not provider.api_key:
             # 没密钥就不建真实客户端。调用到这条路由时给出 missing_api_key，而不是连到上游。
             adapter = UnconfiguredAdapter(name)
@@ -103,6 +105,14 @@ def build_gateway_from_config(
         structured_output_retries=gateway_cfg.structured_output_retries,
         on_record=_combine_hooks(on_record, langfuse_sink),
     )
+
+
+def _create_fake_adapter() -> ModelAdapter:
+    """测试环境的假模型。单独一个函数，避免导入 Gateway 时就带上景区假数据。"""
+
+    from scenic_cs_agent.runtime.fake_model import FakeModelAdapter
+
+    return FakeModelAdapter()
 
 
 def _create_vendor_adapter(provider: object) -> ModelAdapter:

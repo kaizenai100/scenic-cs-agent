@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 SCHEMA_VERSION = "1"
 
 # 数据面、过程面、控制面都列在这里。
-# tool.* / run.retrying 允许写入，但默认生产者不挂工具循环。
+# tool.* 由 AgentService 在工具执行前后写入。run.retrying 只给流式重试用。
 RUN_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "run.started",

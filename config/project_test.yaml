@@ -9,11 +9,24 @@ langfuse:
   environment: test
 
 # 测试环境把熔断调灵敏、限流放宽。其余 gateway 字段仍用 project.yaml，靠深合并保留。
+# default 别名改走 fake：不配密钥也能启动，并完成一轮对话。
+# deepseek / deepseek_backup 仍留在 providers 里，fast 别名继续指向它们。
 gateway:
   circuit_breaker:
     failure_threshold: 3
   rate_limit:
     requests_per_minute: 120
+  providers:
+    fake:
+      kind: fake
+      model: fake-presale
+      enabled: true
+  aliases:
+    default:
+      strategy: priority
+      routes:
+        - provider: fake
+          model: fake-presale
 
 # mock MCP 跟测试环境走。启动超时比公共配置短，连不上尽快失败。
 mcp:

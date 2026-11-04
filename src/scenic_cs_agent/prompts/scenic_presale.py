@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from scenic_cs_agent.prompts.registry import get_prompt
+from scenic_cs_agent.prompts.registry import PromptRegistry, get_prompt
 from scenic_cs_agent.prompts.render import RenderedPrompt
 
 PROMPT_NAME = "scenic_presale"
@@ -15,15 +15,18 @@ def build_tools_section(allowed_tools: tuple[str, ...]) -> str:
 
 
 def render_scenic_presale(
-    *, allowed_tools: tuple[str, ...] = (), label: str | None = None
+    *,
+    allowed_tools: tuple[str, ...] = (),
+    label: str | None = None,
+    registry: PromptRegistry | None = None,
 ) -> RenderedPrompt:
     """渲染售前 system prompt。
 
     label 默认 None：跟随当前环境配置（test 环境拉 test，生产拉 production）。
-    以前这里写死 "production"，会让测试环境直接用线上 prompt，所以改成由配置决定。
+    registry 由进程启动时传入。不传时走 get_prompt，给脚本单独使用。
     """
-    return get_prompt(
-        PROMPT_NAME,
-        {"tools_section": build_tools_section(allowed_tools)},
-        label=label,
-    )
+
+    variables = {"tools_section": build_tools_section(allowed_tools)}
+    if registry is not None:
+        return registry.get(PROMPT_NAME, variables, label=label)
+    return get_prompt(PROMPT_NAME, variables, label=label)

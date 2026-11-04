@@ -220,8 +220,12 @@ class LLMGateway(ModelAdapter):
         return self._sink.snapshot()
 
     def breaker_state(self, provider: str) -> str:
-        """closed / open / half_open。给示例和测试观察熔断，不作为业务分支的依据。"""
+        """closed / open / half_open。给观测和测试看，不作为业务分支的依据。"""
         return self._circuits.for_provider(provider).state
+
+    def breaker_states(self) -> dict[str, str]:
+        """全部已注册 provider 的熔断状态。键是 provider 名，不是模型别名。"""
+        return self._circuits.states()
 
     def generate(self, request: ModelRequest) -> ModelResult:
         """Agent Loop 的入口。别名固定走 default_alias。
