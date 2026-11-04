@@ -12,3 +12,12 @@ langfuse:
 gateway:
   circuit_breaker:
     cooldown_seconds: 45
+
+# 不拉起仓库里的 mock 进程。要接真实 MCP 服务时再打开，并写上这个环境自己的 servers。
+mcp:
+  enabled: false
+  servers:
+    scenic_ticket:
+      enabled: false
+    ticket_http:
+      enabled: false

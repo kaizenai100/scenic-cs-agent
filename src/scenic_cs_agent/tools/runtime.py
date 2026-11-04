@@ -23,7 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 from scenic_cs_agent.tools.base import Tool, ToolResult
 from scenic_cs_agent.tools.context import ExecutionContext
-from scenic_cs_agent.tools.errors import RETRYABLE, ToolErrorCode
+from scenic_cs_agent.tools.errors import RETRYABLE, ToolErrorCode, ToolFailed
 
 audit_log = logging.getLogger("scenic_cs_agent.tool_audit")
 
@@ -93,6 +93,9 @@ class ToolRuntime:
                     return fail(ToolErrorCode.OUTCOME_UNKNOWN, "操作超时，结果未知，请勿重复提交", attempt)
                 if attempt == max_attempts:
                     return fail(ToolErrorCode.TIMEOUT, f"查询超时（{tool.timeout_s}s）", attempt)
+            except ToolFailed as exc:
+                # 工具自己准备好的说明（例如远端说「没有这张订单」）原样回给模型。
+                return fail(ToolErrorCode.EXECUTION_ERROR, str(exc), attempt)
             except Exception as e:  # noqa: BLE001 工具内部错误统一收口
                 return fail(ToolErrorCode.EXECUTION_ERROR, f"工具执行失败：{type(e).__name__}", attempt)
         raise AssertionError("unreachable")

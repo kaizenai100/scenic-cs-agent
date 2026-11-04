@@ -26,15 +26,16 @@ examples/
   step05b_langfuse_prompt/main.py
   step07_agent_loop/main.py
   step08_llm_gateway/main.py
-src/scenic_cs_agent/   # 可复用库（Adapter、Gateway、Agent Loop）
+  step09_mcp/main.py
+src/scenic_cs_agent/   # 可复用库（Adapter、Gateway、Agent Loop、MCP）
 ```
 
 调模型走进程内 Gateway（`build_gateway_from_config()`）。业务代码拿别名，不自己保管上游 Key，也不在调用点写重试和熔断。说明见 `examples/step08_llm_gateway/README.md`。
 
-当前步骤：
+MCP 工具先收成普通 Tool，再进 ToolRuntime。示例不需要模型密钥：
 
 ```bash
-uv run pytest tests/test_llm_gateway.py -q
-uv run python examples/step08_llm_gateway/main.py
+uv run pytest tests/test_mcp.py -q
+uv run python examples/step09_mcp/main.py
 ```
 
