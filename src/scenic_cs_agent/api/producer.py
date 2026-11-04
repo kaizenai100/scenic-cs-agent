@@ -1,5 +1,8 @@
 """把一次模型流收成 RunEvent。
 
+生产对话不走这里，走 AgentService。这条路径留给测试：
+注入一个脚本模型，覆盖断连、续传、取消和失败收口。
+
 生产者和 HTTP 订阅者是两条任务：
   POST /v1/runs 把本协程丢到后台，马上返回 run_id；
   GET  /v1/runs/{id}/events 只读 RunStore，不直接碰模型。

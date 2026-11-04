@@ -15,8 +15,8 @@ import httpx
 import pytest
 from httpx import ASGITransport
 
-from scenic_cs_agent.api.app import create_app
-from scenic_cs_agent.api.demo_runner import ScriptedModel
+from scenic_cs_agent.bootstrap import create_app
+from scripted_model import ScriptedModel
 from scenic_cs_agent.api.events import tool_completed_data, tool_started_data
 from scenic_cs_agent.api.producer import StreamFailure
 from scenic_cs_agent.api.run_store import RunStatus, RunStore

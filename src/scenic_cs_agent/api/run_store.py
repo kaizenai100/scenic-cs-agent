@@ -114,6 +114,11 @@ class RunStore:
 
         return self._runs.get(run_id)
 
+    def all(self) -> list[RunState]:
+        """当前进程里的全部 Run。关闭时用来取消还没结束的任务。"""
+
+        return list(self._runs.values())
+
     def _append_locked(self, state: RunState, event_type: str, data: dict[str, Any]) -> RunEvent:
         """在已持有 state.changed 的前提下追加一条事件并叫醒订阅者。
 

@@ -4,7 +4,7 @@
 用官方 SDK 的 MCPServer，传输走 stdio：stdout 只留给协议，日志写到 stderr。
 
 启动：
-    python -m scenic_cs_agent.mcp_server
+    python -m scenic_cs_agent.mcp.server
 """
 
 from __future__ import annotations

@@ -575,6 +575,10 @@ class McpHub:
         self._connections: list[McpConnection] = []
         self.tools: list[Tool] = []
         self.reports: list[McpToolReport] = []
+        # 服务名 → connected / disabled / error。就绪检查读这份，不自己再去连。
+        self.server_state: dict[str, str] = {}
+        # 只在 error 时有值。说明给运维看，不要把密钥写进来。
+        self.server_errors: dict[str, str] = {}
         # 非 required 的服务没连上时记在这里，不抛。
         self.errors: list[str] = []
         self._did_connect = False
@@ -587,11 +591,14 @@ class McpHub:
         self._did_connect = True
         _OPEN_HUBS.add(self)
         if not self.config.enabled:
+            for name in self.config.servers:
+                self.server_state[name] = "disabled"
             return []
         taken = set(self._local_names)
         try:
             for name, spec in self.config.servers.items():
                 if not spec.enabled:
+                    self.server_state[name] = "disabled"
                     continue
                 self._connect_server(name, spec, taken)
         except Exception:
@@ -630,7 +637,10 @@ class McpHub:
         except McpStartupError as exc:
             if spec.required:
                 raise
-            self.errors.append(str(exc))
+            message = str(exc)
+            self.errors.append(message)
+            self.server_state[name] = "error"
+            self.server_errors[name] = message
             logger.warning("%s", exc)
             return
         self._connections.append(connection)
@@ -639,6 +649,7 @@ class McpHub:
         )
         self.tools.extend(tools)
         self.reports.extend(reports)
+        self.server_state[name] = "connected"
 
 
 __all__ = [

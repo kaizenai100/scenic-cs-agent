@@ -142,6 +142,14 @@ class CircuitBreakerGroup:
             for name in providers
         }
 
+    def states(self) -> dict[str, str]:
+        """每个 provider 当前的熔断状态：closed / open / half_open。
+
+        读状态时，冷却已经结束的会先切到半开。这是给就绪检查看的，不是放行。
+        """
+
+        return {name: breaker.state for name, breaker in self._breakers.items()}
+
     def for_provider(self, name: str) -> CircuitBreaker:
         try:
             return self._breakers[name]
